@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>カラーソート</title>
+<style>
+:root{
+  --bg:#ffffff;--fg:#33373b;--sub:#8a9096;--line:#c8ccd0;--glass:#f5f6f7;--ac:#5f7f8f;
+  box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+body{margin:0;min-height:100vh;background:var(--bg);color:var(--fg);text-align:center;
+  font-family:"Hiragino Kaku Gothic ProN","Hiragino Sans","Yu Gothic","Meiryo",sans-serif;font-weight:400;letter-spacing:.06em}
+h1{font-size:.95rem;font-weight:400;letter-spacing:.4em;margin:28px 0 14px;text-indent:.4em}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+button:focus-visible,.tube:focus-visible{outline:2px solid var(--ac);outline-offset:3px}
+#lv{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px;padding:0 12px}
+#lv button{font-size:.8rem;color:var(--sub);padding:6px 2px;border-bottom:1.5px solid transparent}
+#lv button.on{color:var(--fg);border-bottom-color:var(--ac)}
+#st{margin:18px 0 0;min-height:1.5em;font-size:.8rem;color:var(--sub)}
+#st.ok{color:var(--ac);font-weight:400}
+#board{display:flex;flex-wrap:wrap;gap:26px 16px;justify-content:center;padding:34px 16px 26px;max-width:640px;margin:0 auto}
+.tube{width:46px;height:calc(var(--cap)*36px + 12px);box-sizing:border-box;padding:5px 4px;
+  border:1.5px solid var(--line);border-top:none;border-radius:0 0 24px 24px;background:var(--glass);
+  display:flex;flex-direction:column-reverse;gap:2px;cursor:pointer;transition:transform .18s ease,border-color .18s}
+.tube.sel{transform:translateY(-12px);border-color:var(--ac)}
+.u{height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:15px;letter-spacing:0;
+  box-shadow:inset 0 2px 0 #ffffff26,inset 0 -3px 0 #00000014}
+.u:first-child{border-radius:9px 9px 20px 20px}
+.ctl{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;padding:0 12px 40px}
+.ctl button{font-size:.78rem;padding:8px 18px;border:1px solid var(--line);border-radius:999px;color:var(--fg)}
+.ctl button:hover:not(:disabled){border-color:var(--ac)}
+.ctl button.next{border-color:var(--ac);color:var(--ac)}
+.ctl button:disabled{opacity:.3;cursor:default}
+@media (prefers-reduced-motion:reduce){.tube{transition:none}}
+</style>
+</head>
+<body>
+<h1>カラーソート</h1>
+<div id="lv"></div>
+<div id="st"></div>
+<div id="board"></div>
+<div class="ctl">
+  <button id="undo">Undo</button>
+  <button id="reset">Reset</button>
+  <button id="add">Add tube</button>
+  <button id="new">New stage</button>
+</div>
+
+<script>
+// 難易度設定: n=色数, cap=容器の容量, e=空き容器, steps=逆再生の回数, mix=混ざった容器数の下限
+const LV = {
+  easy:  {label:'Easy',      n:4,  cap:4, e:2, steps:40,  mix:3},
+  normal:{label:'Normal',    n:6,  cap:4, e:2, steps:80,  mix:5},
+  hard:  {label:'Hard',      n:8,  cap:5, e:2, steps:150, mix:7},
+  vhard: {label:'Very Hard', n:10, cap:5, e:2, steps:250, mix:9}
+};
+// くすんだ和色寄りの配色
+const COL = ['#b86a66','#5a7fa8','#cfaa5a','#6f9c80','#8e7cad','#cf8f62','#5fa4a8','#c48aa2','#8a7058','#8f989f'];
+const SYM = ['●','▲','■','◆','★','♥','✚','♣','✖','◗']; // 色だけに頼らないための記号
+
+// 背景の明るさに応じて記号の色を決める
+function ink(hex) {
+  const n = parseInt(hex.slice(1), 16), r = n >> 16, g = n >> 8 & 255, b = n & 255;
+  return (0.299*r + 0.587*g + 0.114*b) > 165 ? 'rgba(35,40,46,.7)' : 'rgba(255,255,255,.85)';
+}
+
+const clone = s => s.map(t => t.slice());
+const topRun = t => { const c = t[t.length-1]; let r = 0; for (let i = t.length-1; i >= 0 && t[i] === c; i--) r++; return r; };
+const isSolved = (s, cap) => s.every(t => t.length === 0 || (t.length === cap && t.every(v => v === t[0])));
+
+// ゲームと同じルール: 一番上の同色ブロックを、入る分だけ移す
+function pour(s, a, b, cap) {
+  const A = s[a], B = s[b];
+  if (a === b || !A.length) return 0;
+  const c = A[A.length-1];
+  if (B.length && B[B.length-1] !== c) return 0;
+  const k = Math.min(topRun(A), cap - B.length);
+  if (k <= 0) return 0;
+  for (let i = 0; i < k; i++) B.push(A.pop());
+  return k;
+}
+
+// pour の逆操作を1回ランダムに試す(成功したら true)
+function reverseStep(s, cap) {
+  const xs = s.map((_, i) => i).filter(i => s[i].length);
+  const x = xs[Math.random() * xs.length | 0], X = s[x];
+  const c = X[X.length-1], r = topRun(X);
+  const k = 1 + (Math.random() * r | 0);
+  if (k === r && X.length > r) return false;          // 取り出した後の一番上が別の色になる操作は順方向にできない
+  const y = Math.random() * s.length | 0;
+  if (y === x) return false;
+  const Y = s[y];
+  if (Y.length + k > cap) return false;
+  const ry = Y.length && Y[Y.length-1] === c ? topRun(Y) : 0;
+  const space = cap - (X.length - k);
+  if (k !== Math.min(k + ry, space)) return false;    // 順方向で「ちょうどk個移る」ことを保証
+  X.length -= k;
+  for (let i = 0; i < k; i++) Y.push(c);
+  return true;
+}
+
+// 完成状態から逆再生して作るので、必ずクリアできる
+function generate(L) {
+  let s;
+  for (let t = 0; t < 200; t++) {
+    s = [];
+    for (let i = 0; i < L.n; i++) s.push(Array(L.cap).fill(i));
+    for (let i = 0; i < L.e; i++) s.push([]);
+    let done = 0, tries = 0;
+    while (done < L.steps && tries < 20000) { tries++; if (reverseStep(s, L.cap)) done++; }
+    const mixed = s.filter(x => x.length && !x.every(v => v === x[0])).length;
+    if (mixed >= L.mix && !isSolved(s, L.cap)) return s;
+  }
+  return s;
+}
+
+let G = null;
+const $ = id => document.getElementById(id);
+
+function newGame(key) {
+  const L = LV[key];
+  const s = generate(L);
+  G = {key, cap: L.cap, s, init: clone(s), sel: -1, hist: [], moves: 0, extra: false, clear: false};
+  render();
+}
+
+function render() {
+  $('lv').innerHTML = '';
+  for (const k in LV) {
+    const b = document.createElement('button');
+    b.textContent = LV[k].label;
+    if (k === G.key) b.className = 'on';
+    b.onclick = () => newGame(k);
+    $('lv').appendChild(b);
+  }
+  const board = $('board');
+  board.style.setProperty('--cap', G.cap);
+  board.innerHTML = '';
+  G.s.forEach((t, i) => {
+    const d = document.createElement('div');
+    d.className = 'tube' + (i === G.sel ? ' sel' : '');
+    d.tabIndex = 0;
+    d.setAttribute('role', 'button');
+    d.setAttribute('aria-label', '容器' + (i + 1));
+    d.onclick = () => tap(i);
+    d.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tap(i); } };
+    t.forEach(v => {
+      const u = document.createElement('div');
+      u.className = 'u';
+      u.style.background = COL[v];
+      u.style.color = ink(COL[v]);
+      u.textContent = SYM[v];
+      d.appendChild(u);
+    });
+    board.appendChild(d);
+  });
+  $('st').textContent = G.clear ? 'クリア  ' + G.moves + '手' : G.moves + '手';
+  $('st').className = G.clear ? 'ok' : '';
+  $('new').className = G.clear ? 'next' : '';
+  $('undo').disabled = !G.hist.length || G.clear;
+  $('add').disabled = G.extra || G.clear;
+}
+
+function tap(i) {
+  if (G.clear) return;
+  if (G.sel < 0) { if (G.s[i].length) G.sel = i; render(); return; }
+  if (G.sel === i) { G.sel = -1; render(); return; }
+  const before = clone(G.s);
+  if (pour(G.s, G.sel, i, G.cap)) {
+    G.hist.push(before);
+    G.moves++;
+    G.sel = -1;
+    if (isSolved(G.s, G.cap)) G.clear = true;
+  } else {
+    G.sel = G.s[i].length ? i : -1;
+  }
+  render();
+}
+
+$('undo').onclick = () => { if (G.hist.length) { G.s = G.hist.pop(); G.moves--; G.sel = -1; render(); } };
+$('reset').onclick = () => { G.s = clone(G.init); G.sel = -1; G.hist = []; G.moves = 0; G.extra = false; G.clear = false; render(); };
+$('new').onclick = () => newGame(G.key);
+
+// リワード広告の差し替え口。今は広告なしで即付与。SDKを入れるときはここで広告を流し、完了後に cb を呼ぶ。
+function showRewardAd(cb) { cb(); }
+$('add').onclick = () => {
+  if (G.extra) return;
+  showRewardAd(() => {
+    G.hist.push(clone(G.s));
+    G.s.push([]);
+    G.extra = true;
+    render();
+  });
+};
+
+newGame('easy');
+</script>
+</body>
+</html>
